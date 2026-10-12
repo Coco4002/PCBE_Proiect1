@@ -2,7 +2,7 @@
 
 `BursaSincronizata` gestioneaza ordinele de cumparare si vanzare, potrivirea acestora
 si istoricul tranzactiilor. Fiecare tranzactie este reprezentata printr-un obiect imuabil `Tranzactie`.
-Clasele existente (`Ordin`, `InterfataBursa`, `BursaGresitaRaceCondition`) sunt pastrate.
+Clasele `BursaGresitaRaceCondition` si `BursaGresitaDeadlock` sunt solutii gresite intentionat.
 
 ## Compilare
 
@@ -46,3 +46,36 @@ fara exceptii si fara intrari in istoricul tranzactiilor. Un ordin invalid nu re
 Istoricul este pastrat in memorie si include ID-urile ordinelor, cumparatorul, vanzatorul,
 compania, pretul si cantitatea fiecarei tranzactii. Componenta nu gestioneaza solduri sau
 portofolii si nu necesita dependente externe.
+
+## Solutia gresita 2: deadlock (`BursaGresitaDeadlock`)
+
+Fiecare companie are propriul lock, ca o tranzactie pe NVDA sa nu blocheze ordinele pe AAPL
+("nicio tranzactie in curs pe actiunile respective"), iar istoricul comun are lock-ul `ISTORIC`.
+Regulile de potrivire sunt identice cu `BursaSincronizata` si toate datele comune sunt protejate,
+deci nu exista race condition. Defectul este ordinea lock-urilor:
+
+| Metoda | Ordinea lock-urilor |
+|---|---|
+| `plaseazaOrdin`, `modificaOrdin` | COMPANIE -> ISTORIC (la fiecare tranzactie) |
+| `citestePiata` | ISTORIC -> toate COMPANIILE, alfabetic |
+
+Un trader care tranzactioneaza tine `NVDA` si cere `ISTORIC`, in timp ce un trader care citeste
+piata tine `ISTORIC` si cere `NVDA`: asteptare circulara. Sunt indeplinite toate conditiile Coffman:
+excludere mutuala (`ReentrantLock`), hold and wait, fara preemptiune (`lock()` fara timeout) si
+asteptare circulara.
+
+Rulare demonstratie (dupa `mvn compile`):
+
+```
+java -cp target/classes bursa.DemoDeadlock [latentaMs] [timeoutSec]
+```
+
+Implicit latenta este 50 ms si timeout-ul 20 s. Latenta este o pauza intre primul si al doilea lock:
+nu cauzeaza deadlock-ul, doar il face reproductibil. Cu `0` deadlock-ul ramane posibil, dar rar.
+Firul principal foloseste `ThreadMXBean.findDeadlockedThreads()` si, la detectare, afiseaza cine
+detine si cine asteapta fiecare lock, precum si ciclul format.
+
+Remedieri posibile:
+- ordine globala a lock-urilor: mereu COMPANIILE alfabetic, apoi ISTORIC (elimina asteptarea circulara);
+- adaugarea tranzactiilor in istoric dupa eliberarea lock-ului companiei (elimina hold and wait);
+- `tryLock(timeout)` cu renuntare si reincercare (introduce preemptiune).
